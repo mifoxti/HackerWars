@@ -20,9 +20,12 @@ dp = Dispatcher()
 # Имя файла базы данных SQLite
 db_filename = 'users.db'
 
-
 # Функция для создания таблицы пользователей в базе данных
 def create_users_table():
+    """
+    Создает таблицу 'users' в базе данных, если ее нет.
+    Поля таблицы включают информацию о пользователях и их характеристиках в игре.
+    """
     conn = sqlite3.connect(db_filename)
     cursor = conn.cursor()
     cursor.execute('''
@@ -46,9 +49,11 @@ def create_users_table():
     conn.commit()
     conn.close()
 
-
 # Функция для регистрации пользователя в базе данных
 def register_user(user: types.User, game_name: str, faction: str):
+    """
+    Регистрирует пользователя в базе данных со значениями по умолчанию для игровых характеристик.
+    """
     conn = sqlite3.connect(db_filename)
     cursor = conn.cursor()
     cursor.execute('''
@@ -61,10 +66,13 @@ def register_user(user: types.User, game_name: str, faction: str):
     conn.commit()
     conn.close()
 
-
 # Обработка команды /start
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
+    """
+    Обработчик команды /start.
+    Запрашивает у пользователя игровое имя и выбор фракции для регистрации в базе данных.
+    """
     create_users_table()  # Создаем таблицу, если ее нет
 
     # Запрашиваем игровое имя
@@ -91,10 +99,12 @@ async def command_start_handler(message: Message) -> None:
     await message.answer(f"Привет, {hbold(message.from_user.full_name)}! Ты успешно зарегистрирован.")
     await message.answer("Теперь ты в игре! Удачи!")
 
-
 # Обработка любых других сообщений
 @dp.message()
 async def echo_handler(message: types.Message) -> None:
+    """
+    Обработчик для любых других сообщений, отправляет копию полученного сообщения.
+    """
     try:
         # Отправляем копию полученного сообщения
         await message.send_copy(chat_id=message.chat.id)
@@ -102,7 +112,9 @@ async def echo_handler(message: types.Message) -> None:
         # Не все типы поддерживаются для копирования, поэтому обрабатываем это
         await message.answer("Попробуйте еще раз!")
 
-
 async def main() -> None:
+    """
+    Главная асинхронная функция для запуска бота.
+    """
     bot = Bot(TOKEN, parse_mode=ParseMode.HTML)
     await dp.start_polling(bot)
