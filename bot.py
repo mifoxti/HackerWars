@@ -9,12 +9,15 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.utils.markdown import hbold
 from aiogram.types import ReplyKeyboardRemove
 import app.keyboards as kb
 from aiogram import F
+import nest_asyncio
+
+nest_asyncio.apply()
 
 
 class fsm(StatesGroup):
@@ -31,6 +34,8 @@ class fsm(StatesGroup):
     add_art = State()
     buy = State()
     tasks_init = State()
+    broadcast = State()
+    parry = State()
 
 
 # Загрузка токена из файла config.json
@@ -47,81 +52,6 @@ dp = Dispatcher()
 db_filename = 'users.db'
 
 
-def create_users_table():
-    """
-    Создает таблицу 'users' в базе данных, если ее нет.
-    Поля таблицы включают информацию о пользователях и их характеристиках в игре.
-    """
-    conn = sqlite3.connect(db_filename)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER,
-            username TEXT,
-            full_name TEXT,
-            game_name TEXT,
-            money INTEGER,
-            faction TEXT,
-            level INTEGER,
-            experience INTEGER,
-            attack INTEGER,
-            defense INTEGER,
-            camouflage INTEGER,
-            search INTEGER,
-            agility INTEGER,
-            endurance INTEGER
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-
-def create_artifacts_table():
-    """
-    Создает таблицу 'artifacts' в базе данных, если ее нет.
-    Поля таблицы включают информацию об артефактах.
-    """
-    conn = sqlite3.connect(db_filename)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS artifacts (
-            id INTEGER PRIMARY KEY,
-            name TEXT,
-            cost INTEGER,
-            attack INTEGER,
-            defense INTEGER,
-            camouflage INTEGER,
-            search INTEGER,
-            agility INTEGER,
-            endurance INTEGER,
-            req_lvl INTEGER
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-
-def create_user_artifacts_table():
-    """
-    Создает таблицу 'user_artifacts' в базе данных, если ее нет.
-    Поля таблицы включают информацию о купленных артефактах пользователей.
-    """
-    conn = sqlite3.connect(db_filename)
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS user_artifacts (
-            id INTEGER PRIMARY KEY,
-            user_id INTEGER,
-            artifact_id INTEGER,
-            FOREIGN KEY(user_id) REFERENCES users(user_id),
-            FOREIGN KEY(artifact_id) REFERENCES artifacts(id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
-
-
 def register_user(user: types.User, game_name: str, faction: str):
     """
     Регистрирует пользователя в базе данных со значениями по умолчанию для игровых характеристик.
@@ -132,8 +62,8 @@ def register_user(user: types.User, game_name: str, faction: str):
         INSERT INTO users (
             user_id, username, full_name, game_name, money, faction,
             level, experience, attack, defense, camouflage,
-            search, agility, endurance
-        ) VALUES (?, ?, ?, ?, 1000, ?, 1, 0, 0, 0, 0, 0, 0, 0)
+            search, agility, endurance, status
+        ) VALUES (?, ?, ?, ?, 1000, ?, 1, 0, 0, 0, 0, 0, 0, 100, 'active')
     ''', (user.id, user.username, user.full_name, game_name, faction))
     conn.commit()
     conn.close()
@@ -158,10 +88,6 @@ async def command_reg_handler(message: Message, state: FSMContext):
     Обработчик команды /reg.
     Запрашивает у пользователя игровое имя и выбор фракции для регистрации в базе данных.
     """
-    create_users_table()
-    create_artifacts_table()
-    create_user_artifacts_table()
-
     # Проверяем, зарегистрирован ли уже пользователь
     conn = sqlite3.connect(db_filename)
     cursor = conn.cursor()
@@ -254,12 +180,247 @@ async def menu_handler(message: Message, state: FSMContext):
             await message.answer(f'Хакер - тоже человек, а значит и обычными делами должен заниматься.')
             await state.update_data(menu=message.text)
             await tasks(message, state)
+        elif message.text == "🗡 Битва":
+            await state.update_data(menu=message.text)
+            await message.answer(f'Битва - возможность испытать свои навыки в бою с другим пользователем.')
+            await fight_handler(message, state)
     elif message.text.split(' ')[0] == '/add_artifact' and message.from_user.id == 808305848:
         await state.update_data(menu=message.text)
         await add_artifact_handler(message, state)
+    elif message.text.split(' ')[0] == '/broadcast' and message.from_user.id == 808305848:
+        await state.update_data(menu=message.text)
+        await broadcast_handler(message, state)
     else:
         await message.answer(f'Хм, кажется, такого выбора тебе не давали, не забывай свои права...')
         await state.set_state(fsm.menu)
+
+
+# Вспомогательные функции для обновления и извлечения данных из БД
+def get_user_data(user_id):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM users WHERE user_id=?', (user_id,))
+    user_data = cursor.fetchone()
+    conn.close()
+    return user_data
+
+
+def update_user_data(user_id, field, value):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute(f'UPDATE users SET {field}=? WHERE user_id=?', (value, user_id))
+    conn.commit()
+    conn.close()
+
+
+def find_targets(attacker_search, attacker_faction):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM users WHERE camouflage < ? AND faction != ?',
+                   (attacker_search, attacker_faction))
+    targets = cursor.fetchall()
+    conn.close()
+    return [target[0] for target in targets]
+
+
+async def fight_handler(message: types.Message, state: FSMContext):
+    attacker_id = message.from_user.id
+    attacker_data = get_user_data(attacker_id)
+
+    if not attacker_data:
+        await message.answer("Не удалось найти ваши данные. Пожалуйста, зарегистрируйтесь в игре.")
+        return
+
+    attacker_search = attacker_data[12]  # Поле "Поиск"
+    attacker_attack = attacker_data[9]  # Поле "Атака"
+    attacker_faction = attacker_data[6]  # Поле "Фракция"
+
+    # Поиск цели
+    targets = find_targets(attacker_search, attacker_faction)
+    if not targets:
+        await message.answer("Не удалось найти подходящих целей для атаки.")
+        await state.set_state(fsm.menu)
+        return
+
+    target_id = targets[0]  # Выбираем первую найденную цель для простоты
+    target_data = get_user_data(target_id)
+    target_defense = target_data[10]  # Поле "Защита"
+    target_status = target_data[15]  # Поле "Статус" (например, "активен", "спит", "отруб")
+    target_agility = target_data[13]  # Поле "Ловкость"
+
+    # Применение штрафов к защите в зависимости от статуса
+    if target_status == 'sleeping':
+        target_defense *= 0.95
+    elif target_status == 'unconscious':
+        target_defense *= 0.75
+
+    # Сохраняем атаку в базе данных
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('INSERT INTO active_attacks (attacker_id, target_id, attack_time) VALUES (?, ?, ?)',
+                   (attacker_id, target_id, int(datetime.now().timestamp())))
+    conn.commit()
+    conn.close()
+
+    # Уведомление цели с возможностью парирования атаки
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Парировать атаку", callback_data=f"parry_{attacker_id}")]
+    ])
+    try:
+        await bot.send_message(target_id, "Вас атакуют! Вы можете попытаться парировать атаку в течение 2 минут.",
+                               reply_markup=keyboard)
+    except Exception as e:
+        print(f"Не удалось отправить сообщение пользователю {target_id}: {e}")
+
+    await message.answer("Вы атаковали цель. Ожидайте результат атаки.")
+
+    # Запуск ожидания парирования атаки
+    await asyncio.sleep(120)
+    # Проверяем, существует ли еще активная атака (пользователь не парировал)
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM active_attacks WHERE attacker_id = ?', (attacker_id,))
+    active_attack = cursor.fetchone()
+    conn.close()
+
+    if active_attack:
+        # Если атака все еще активна, то продолжаем выполнение
+        await check_parry(attacker_id, target_id, target_agility, target_defense)
+    else:
+        # Если атака уже не активна (пользователь парировал), то просто выходим из функции
+        return
+
+
+async def check_parry(attacker_id, target_id, target_agility, target_defense):
+    target_data = get_user_data(target_id)
+    attacker_data = get_user_data(attacker_id)
+
+    # Проверка успешности парирования
+    if target_agility > attacker_data[10] * 0.5:
+        update_user_data(attacker_id, 'defense', attacker_data[10] * 0.5)
+        await bot.send_message(attacker_id, "Ваша атака была парирована! Ваша защита была уменьшена на 50%.")
+        await bot.send_message(target_id, "Вы успешно парировали атаку!")
+
+        # Удаление атаки из базы данных
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM active_attacks WHERE attacker_id=? AND target_id=?', (attacker_id, target_id))
+        conn.commit()
+        conn.close()
+    else:
+        # Пример награды деньгами
+        reward_money = target_data[7] * 0.1
+        reward_experience = 100  # Пример награды опытом
+
+        # Обновление данных атакующего
+        update_user_data(attacker_id, 'money', attacker_data[7] + reward_money)
+        update_user_data(attacker_id, 'experience', attacker_data[8] + reward_experience)
+
+        # Обновление данных цели
+        update_user_data(target_id, 'money', target_data[7] - reward_money)
+
+        await bot.send_message(target_id, "Вам не удалось парировать атаку. Вы потеряли часть своих монет.")
+        await bot.send_message(attacker_id,
+                               f"Атака успешна! Вы получили {reward_money} монет и {reward_experience} опыта.")
+
+        # Удаление атаки из базы данных
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM active_attacks WHERE attacker_id=? AND target_id=?', (attacker_id, target_id))
+        conn.commit()
+        conn.close()
+
+
+async def parry_attack(attacker_id, target_id, target_agility, attacker_defense):
+    # await asyncio.sleep(20)  # Ожидание 2 минут
+    await bot.send_message(attacker_id, "Ваша атака была парирована! Ваша защита была уменьшена на 50%.")
+    await bot.send_message(target_id, "Вы успешно парировали атаку!")
+    target_data = get_user_data(target_id)
+    attacker_data = get_user_data(attacker_id)
+
+    # Проверка успешности парирования
+    if target_agility > attacker_defense * 0.5:
+        # update_user_data(attacker_id, 'defense', attacker_defense * 0.5)
+        # Обновление данных защищающегося
+        reward_money = attacker_data[5] * 0.1  # Пример награды деньгами
+        reward_experience = 100  # Пример награды опытом
+        update_user_data(target_id, 'money', target_data[5] + reward_money)
+        update_user_data(target_id, 'experience', target_data[8] + reward_experience)
+
+        # Обновление данных цели
+        update_user_data(attacker_id, 'money', attacker_data[5] - reward_money)
+
+        await bot.send_message(attacker_id, "Вашей защиты не хватило, чтобы переиграть цель. Охотник проиграл жертве..."
+                                            "\n\n"
+                                            " Вы потеряли часть своих монет.")
+        await bot.send_message(target_id, "Вашей ловкости хватило, чтобы переиграть гадкого воришку!")
+        # Удаление атаки из базы данных
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM active_attacks WHERE attacker_id=? AND target_id=?', (attacker_id, target_id))
+        conn.commit()
+        conn.close()
+    else:
+        reward_money = target_data[5] * 0.1  # Пример награды деньгами
+        reward_experience = 100  # Пример награды опытом
+
+        # Обновление данных атакующего
+        update_user_data(attacker_id, 'money', attacker_data[5] + reward_money)
+        update_user_data(attacker_id, 'experience', attacker_data[8] + reward_experience)
+
+        # Обновление данных цели
+        update_user_data(target_id, 'money', target_data[5] - reward_money)
+
+        await bot.send_message(target_id, "Вам не удалось парировать атаку. Вы потеряли часть своих монет.")
+        await bot.send_message(attacker_id,
+                               f"Атака успешна! Вы получили {reward_money} монет и {reward_experience} опыта.")
+
+        # Удаление атаки из базы данных
+        conn = sqlite3.connect('users.db')
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM active_attacks WHERE attacker_id=? AND target_id=?', (attacker_id, target_id))
+        conn.commit()
+        conn.close()
+
+
+@dp.callback_query(F.data.startswith('parry_'))
+async def process_callback_parry(callback_query: types.CallbackQuery):
+    print(1)
+    attacker_id = int(callback_query.data.split('_')[1])
+    target_id = callback_query.from_user.id
+    target_data = get_user_data(target_id)
+    attacker_data = get_user_data(attacker_id)
+
+    if target_data and attacker_data:
+        print(1)
+        await callback_query.answer('Атака парирована, ожидаем результаты боя')
+        await parry_attack(attacker_id, target_id, target_data[13], attacker_data[10])  # Поля "Ловкость" и "Защита"
+
+    else:
+        await bot.answer_callback_query(callback_query.id, text="Ошибка при обработке данных пользователя.")
+
+
+@dp.message(fsm.parry)
+async def parry_handler(message: types.Message, state: FSMContext):
+    user_id = message.from_user.id
+
+    # Проверьте, есть ли у пользователя активная атака
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM active_attacks WHERE target_id=?', (user_id,))
+    attack = cursor.fetchone()
+    conn.close()
+
+    if attack:
+        attacker_id = attack[1]
+        attacker_data = get_user_data(attacker_id)
+        target_data = get_user_data(user_id)
+
+        await parry_attack(attacker_id, user_id, target_data[13], attacker_data[10])  # Поля "Ловкость" и "Защита"
+    else:
+        await message.answer("Нет активных атак, которые можно парировать.")
+
+    await state.set_state(fsm.menu)
 
 
 @dp.message(fsm.tasks)
@@ -368,18 +529,23 @@ async def tasks_init(message: Message, state: FSMContext):
                 # Запускаем таймер выполнения задачи
                 asyncio.create_task(complete_task(user_id, task_id, end_time))
 
-                await message.answer(f"Вы начали выполнение задачи '{name}'. Она займет {duration} минут.")
+                await message.answer(f"Вы начали выполнение задачи '{name}'. Она займет {duration} минут.",
+                                     reply_markup=kb.main_menu)
+                await state.set_state(fsm.menu)
             else:
-                await message.answer("Задача не найдена.")
+                await message.answer("Задача не найдена.", reply_markup=kb.main_menu)
+                await state.set_state(fsm.menu)
         else:
             if message.text == '🔙 Домой':
                 stats_message = return_home(message)
                 await message.answer(f'root@HackerWars:/$\n\n{stats_message}', reply_markup=kb.main_menu)
                 await state.set_state(fsm.menu)
             else:
-                await message.answer("Задача не найдена или вам недоступна.")
+                await message.answer("Задача не найдена или вам недоступна.", reply_markup=kb.main_menu)
+                await state.set_state(fsm.menu)
     else:
-        await message.answer("Ваш уровень не найден. Пожалуйста, зарегистрируйтесь в игре.")
+        await message.answer("Ваш уровень не найден. Пожалуйста, зарегистрируйтесь в игре.", reply_markup=kb.main_menu)
+        await state.set_state(fsm.menu)
         conn.close()
 
 
@@ -495,6 +661,35 @@ async def shop_command_handler(message: Message, state: FSMContext):
     await state.set_state(fsm.buy)
 
 
+@dp.message(fsm.broadcast)
+async def broadcast_handler(message: Message, state: FSMContext) -> None:
+    """
+    Рассылает сообщение всем пользователям. Команда только для администраторов.
+    Формат команды: /broadcast <message>
+    """
+    broadcast_message = message.text.partition(' ')[2]
+
+    if not broadcast_message:
+        await message.answer("Использование команды: /broadcast [message]")
+        return
+
+    conn = sqlite3.connect(db_filename)
+    cursor = conn.cursor()
+    cursor.execute('SELECT user_id FROM users')
+    users = cursor.fetchall()
+    conn.close()
+
+    for user in users:
+        user_id = user[0]
+        try:
+            await bot.send_message(user_id, broadcast_message)
+        except Exception as e:
+            print(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+
+    await message.answer("Сообщение успешно разослано всем пользователям.")
+    await state.set_state(fsm.menu)
+
+
 @dp.message(fsm.add_art)
 async def add_artifact_handler(message: Message, state: FSMContext) -> None:
     """
@@ -529,7 +724,6 @@ async def buy_command_handler(message: Message, state: FSMContext):
     Позволяет пользователю купить артефакт по его ID или выполнить другое действие.
     """
     args = message.text
-    create_user_artifacts_table()
 
     # Проверяем, является ли введенный текст числом (ID артефакта) или нет
     try:
