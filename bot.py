@@ -1,5 +1,6 @@
 # bot.py
-
+import asyncio
+from datetime import datetime, timedelta
 import json
 import sqlite3
 
@@ -8,7 +9,7 @@ from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
-from aiogram.types import Message
+from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.utils.markdown import hbold
 from aiogram.types import ReplyKeyboardRemove
@@ -29,6 +30,7 @@ class fsm(StatesGroup):
     shop = State()
     add_art = State()
     buy = State()
+    tasks_init = State()
 
 
 # Загрузка токена из файла config.json
@@ -248,12 +250,167 @@ async def menu_handler(message: Message, state: FSMContext):
                                  f'Очень опасные развлечения, которые могут как сделать вас богаче, так и лишить всех денег, что у вас есть.\n',
                                  reply_markup=kb.web_menu)
             await state.set_state(fsm.web)
+        elif message.text == "⌛️ Дела":
+            await message.answer(f'Хакер - тоже человек, а значит и обычными делами должен заниматься.')
+            await state.update_data(menu=message.text)
+            await tasks(message, state)
     elif message.text.split(' ')[0] == '/add_artifact' and message.from_user.id == 808305848:
         await state.update_data(menu=message.text)
         await add_artifact_handler(message, state)
     else:
         await message.answer(f'Хм, кажется, такого выбора тебе не давали, не забывай свои права...')
         await state.set_state(fsm.menu)
+
+
+@dp.message(fsm.tasks)
+async def tasks(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+
+    # Подключаемся к базе данных
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+
+    # Извлекаем уровень игрока
+    cursor.execute('SELECT level FROM users WHERE user_id=?', (user_id,))
+    user_level = cursor.fetchone()
+
+    if user_level:
+        user_level = user_level[0]
+
+        # Извлекаем задачи, где level_required <= уровню игрока
+        cursor.execute('SELECT * FROM tasks WHERE level_required <= ?', (user_level,))
+        tasks = cursor.fetchall()
+        buttons = []
+        row = []
+        # Формируем сообщение с доступными задачами
+        tasks_message = "Доступные задачи:\n\n"
+        for task in tasks:
+            task_id, name, description, level_required, stamina_cost, duration, reward_money, reward_experience, reward_artifact_chance = task
+            tasks_message += (f"{name}\n"
+                              f"{description}\n"
+                              f"💿 Требуемый уровень: {level_required}\n"
+                              f"🔥 Стоимость выносливости: {stamina_cost}\n"
+                              f"🕔 Время выполнения: {duration} минут\n"
+                              f"💰 Награда (деньги): {reward_money}\n"
+                              f"💡 Награда (опыт): {reward_experience}\n\n")
+            row.append(KeyboardButton(text=name))
+            if len(row) == 2:
+                buttons.append(row)
+                row = []
+
+        if row:
+            buttons.append(row)
+        buttons.append([KeyboardButton(text='🔙 Домой')])
+        keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+        await message.answer(tasks_message, reply_markup=keyboard)
+        await state.set_state(fsm.tasks_init)
+    else:
+        await message.answer("Ваш уровень не найден. Пожалуйста, зарегистрируйтесь в игре.")
+
+    # Закрываем соединение с базой данных
+    conn.close()
+
+
+@dp.message(fsm.tasks_init)
+async def tasks_init(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+
+    # Подключаемся к базе данных
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+
+    # Извлекаем уровень игрока
+    cursor.execute('SELECT level FROM users WHERE user_id=?', (user_id,))
+    user_level = cursor.fetchone()
+    if user_level:
+        user_level = user_level[0]
+
+        # Извлекаем задачи, где level_required <= уровню игрока
+        cursor.execute('SELECT * FROM tasks WHERE level_required <= ?', (user_level,))
+        tasks = cursor.fetchall()
+        task_names = [task[1] for task in tasks]
+
+        if message.text in task_names:
+            # Проверяем, выполняет ли пользователь уже задачу
+            cursor.execute('SELECT * FROM user_tasks WHERE user_id=?', (user_id,))
+            current_task = cursor.fetchone()
+            if current_task:
+                await message.answer("Вы уже выполняете задачу. Дождитесь её завершения.")
+                conn.close()
+                return
+
+            # Извлекаем выбранную задачу
+            cursor.execute('SELECT * FROM tasks WHERE name=?', (message.text,))
+            task = cursor.fetchone()
+            if task:
+                task_id, name, description, level_required, stamina_cost, duration, reward_money, reward_experience, reward_artifact_chance = task
+
+                # Проверяем достаточно ли выносливости у пользователя
+                cursor.execute('SELECT endurance FROM users WHERE user_id=?', (user_id,))
+                user_stamina = cursor.fetchone()[0]
+                if user_stamina < stamina_cost:
+                    await message.answer("У вас недостаточно выносливости для выполнения этой задачи.")
+                    conn.close()
+                    return
+
+                # Обновляем выносливость пользователя
+                new_stamina = user_stamina - stamina_cost
+                cursor.execute('UPDATE users SET endurance=? WHERE user_id=?', (new_stamina, user_id))
+
+                # Добавляем задачу в user_tasks
+                end_time = datetime.now() + timedelta(minutes=duration)
+                cursor.execute('INSERT INTO user_tasks (user_id, task_id, end_time) VALUES (?, ?, ?)',
+                               (user_id, task_id, end_time))
+
+                conn.commit()
+                conn.close()
+
+                # Запускаем таймер выполнения задачи
+                asyncio.create_task(complete_task(user_id, task_id, end_time))
+
+                await message.answer(f"Вы начали выполнение задачи '{name}'. Она займет {duration} минут.")
+            else:
+                await message.answer("Задача не найдена.")
+        else:
+            if message.text == '🔙 Домой':
+                stats_message = return_home(message)
+                await message.answer(f'root@HackerWars:/$\n\n{stats_message}', reply_markup=kb.main_menu)
+                await state.set_state(fsm.menu)
+            else:
+                await message.answer("Задача не найдена или вам недоступна.")
+    else:
+        await message.answer("Ваш уровень не найден. Пожалуйста, зарегистрируйтесь в игре.")
+        conn.close()
+
+
+async def complete_task(user_id, task_id, end_time):
+    await asyncio.sleep((end_time - datetime.now()).total_seconds())
+
+    # Подключаемся к базе данных
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+
+    # Получаем данные задачи
+    cursor.execute('SELECT * FROM tasks WHERE id=?', (task_id,))
+    task = cursor.fetchone()
+    if task:
+        _, name, description, level_required, stamina_cost, duration, reward_money, reward_experience, reward_artifact_chance = task
+
+        # Выдаём награду пользователю
+        cursor.execute('UPDATE users SET money=money+?, experience=experience+? WHERE user_id=?',
+                       (reward_money, reward_experience, user_id))
+
+        # Удаляем задачу из user_tasks
+        cursor.execute('DELETE FROM user_tasks WHERE user_id=?', (user_id,))
+
+        conn.commit()
+        conn.close()
+
+        # Отправляем сообщение пользователю
+        await bot.send_message(user_id,
+                               f"Вы завершили задачу '{name}'. Награда: {reward_money} денег, {reward_experience} опыта.")
+    else:
+        conn.close()
 
 
 @dp.message(fsm.web)
@@ -267,7 +424,8 @@ async def web_handler(message: Message, state: FSMContext):
             await message.answer(f'Казино пока открыто только в Сочи, но скоро будет и здесь!')
             await state.set_state(fsm.web)
         elif message.text == '🔙 Домой':
-            await message.answer(f'Добро пожаловать, ', reply_markup=kb.main_menu)
+            stats_message = return_home(message)
+            await message.answer(f'root@HackerWars:/$\n\n{stats_message}', reply_markup=kb.main_menu)
             await state.set_state(fsm.menu)
     else:
         await message.answer(f'Хм, кажется, такого выбора тебе не давали, не забывай свои права...')
@@ -311,11 +469,11 @@ async def shop_command_handler(message: Message, state: FSMContext):
         await message.answer("В магазине пока нет артефактов.")
         return
 
-    shop_message = "Доступные артефакты:\n\n"
+    shop_message = "Доступные артефакты (Для покупки введите номер):\n\n"
     for artifact in artifacts:
         art_id, art_name, art_cost, art_attack, art_defense, art_camouflage, art_search, art_agility, art_endurance, art_req_lvl = artifact
 
-        artifact_info = f"id: {art_id} {art_name}\nСтоимость: {art_cost} монет\n"
+        artifact_info = f"{art_id} {art_name}\nСтоимость: {art_cost} монет\n"
 
         # Добавляем характеристики, которые не равны нулю
         if art_attack != 0:
@@ -368,19 +526,32 @@ async def add_artifact_handler(message: Message, state: FSMContext) -> None:
 async def buy_command_handler(message: Message, state: FSMContext):
     """
     Обработчик команды /buy.
-    Позволяет пользователю купить артефакт по его ID.
+    Позволяет пользователю купить артефакт по его ID или выполнить другое действие.
     """
     args = message.text
-    if not args:
-        await message.answer("Пожалуйста, укажите ID артефакта. Пример: 1")
-        return
+    create_user_artifacts_table()
 
+    # Проверяем, является ли введенный текст числом (ID артефакта) или нет
     try:
         artifact_id = int(args)
     except ValueError:
-        await message.answer("ID артефакта должен быть числом. Пример: 1")
+        # Если текст не является числом, обрабатываем его как другое действие
+        if message.text == "🏪 Магазин":
+            await state.update_data(menu=message.text)
+            await shop_command_handler(message, state)
+        elif message.text == "🎪 Казино":
+            await message.answer(f'Казино пока открыто только в Сочи, но скоро будет и здесь!')
+            await state.set_state(fsm.web)
+        elif message.text == '🔙 Домой':
+            stats_message = return_home(message)
+            await message.answer(f'root@HackerWars:/$\n\n{stats_message}', reply_markup=kb.main_menu)
+            await state.set_state(fsm.menu)
+        else:
+            await message.answer("ID артефакта должен быть числом. Пример: 1")
         return
 
+    # Если текст является числом, обрабатываем его как ID артефакта и выполняем покупку артефакта
+    # Остальной код остается без изменений
     conn = sqlite3.connect(db_filename)
     cursor = conn.cursor()
     cursor.execute('SELECT level FROM users WHERE user_id=?', (message.from_user.id,))
@@ -389,6 +560,14 @@ async def buy_command_handler(message: Message, state: FSMContext):
     artifact = cursor.fetchone()
     if not artifact:
         await message.answer("Артефакт с таким ID не найден.")
+        conn.close()
+        return
+
+    cursor.execute('SELECT * FROM user_artifacts WHERE user_id=? AND artifact_id=?',
+                   (message.from_user.id, artifact_id))
+    existing_artifact = cursor.fetchone()
+    if existing_artifact:
+        await message.answer("У вас уже есть этот артефакт.")
         conn.close()
         return
 
@@ -418,9 +597,81 @@ async def buy_command_handler(message: Message, state: FSMContext):
 
     conn.commit()
     conn.close()
-
-    await message.answer(f"Вы успешно купили артефакт {artifact[1]} за {artifact_cost} монет.", reply_markup=kb.main_menu)
+    # Вызываем функцию обновления характеристик игрока
+    update_player_stats(message.from_user.id, artifact_id)
+    await message.answer(f"Вы успешно купили артефакт {artifact[1]} за {artifact_cost} монет.",
+                         reply_markup=kb.main_menu)
     await state.set_state(fsm.menu)
+
+
+def update_player_stats(user_id, artifact_id):
+    """
+    Обновляет характеристики пользователя после покупки артефакта.
+    """
+    conn = sqlite3.connect(db_filename)
+    cursor = conn.cursor()
+
+    # Получаем данные об артефакте
+    cursor.execute('SELECT * FROM artifacts WHERE id = ?', (artifact_id,))
+    artifact_data = cursor.fetchone()
+
+    # Получаем текущие характеристики пользователя
+    cursor.execute('SELECT * FROM users WHERE user_id=?', (user_id,))
+    user_data = cursor.fetchone()
+
+    if not artifact_data or not user_data:
+        # Если артефакт или пользователь не найдены, прекращаем выполнение функции
+        conn.close()
+        return
+
+    # Рассчитываем новые характеристики пользователя на основе купленного артефакта
+    new_attack = user_data[9] + artifact_data[3]
+    new_defense = user_data[10] + artifact_data[4]
+    new_camouflage = user_data[11] + artifact_data[5]
+    new_search = user_data[12] + artifact_data[6]
+    new_agility = user_data[13] + artifact_data[7]
+    new_endurance = user_data[14] + artifact_data[8]
+
+    # Обновляем данные пользователя в базе данных
+    cursor.execute('''
+        UPDATE users 
+        SET 
+            attack=?, 
+            defense=?, 
+            camouflage=?, 
+            search=?, 
+            agility=?, 
+            endurance=?
+        WHERE 
+            user_id=?
+    ''', (new_attack, new_defense, new_camouflage, new_search, new_agility, new_endurance, user_id))
+
+    conn.commit()
+    conn.close()
+
+
+def return_home(message):
+    conn = sqlite3.connect(db_filename)
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM users WHERE user_id=?', (message.from_user.id,))
+    user_data = cursor.fetchone()
+    conn.close()
+
+    # Отправляем пользователю его статистику
+    stats_message = (
+        f"👤 {hbold(user_data[4])} ({user_data[6]}):\n"
+        f"💿 Уровень: {user_data[7]}\n"
+        f"💡 Опыт: {user_data[8]}\n"
+        f"💰 Деньги: {user_data[5]}\n"
+        f"⚔️ Атака: {user_data[9]}\n"
+        f"🛡 Защита: {user_data[10]}\n"
+        f"📺 Камуфляж: {user_data[11]}\n"
+        f"🔭 Поиск: {user_data[12]}\n"
+        f"💻 Ловкость: {user_data[13]}\n"
+        f"🔋 Выносливость: {user_data[14]}\n"
+    )
+
+    return stats_message
 
 
 @dp.message()
@@ -436,7 +687,8 @@ async def echo_handler(message: types.Message, state: FSMContext) -> None:
         conn.close()
 
         if user_data:
-            await message.answer(f'Добро пожаловать, ', reply_markup=kb.main_menu)
+            stats_message = return_home(message)
+            await message.answer(f'root@HackerWars:/$\n\n{stats_message}', reply_markup=kb.main_menu)
             await state.set_state(fsm.menu)
             return
     except TypeError:
