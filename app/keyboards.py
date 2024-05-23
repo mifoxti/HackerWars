@@ -11,6 +11,27 @@ main = ReplyKeyboardMarkup(keyboard=[
 
 start = InlineKeyboardMarkup(inline_keyboard=[
     [
-        InlineKeyboardButton(text="Конечено")
+        InlineKeyboardButton(text="Конечно", callback_data="reg")
+    ]
+])
+
+main_menu = ReplyKeyboardMarkup(keyboard=[
+    [
+        KeyboardButton(text='👤 Профиль')
+    ],
+    [
+        KeyboardButton(text='🌐 Сеть'), KeyboardButton(text='🗡 Битва'), KeyboardButton(text='⌛️ Дела')
+    ],
+    [
+        KeyboardButton(text='⚙️ Настройки')
+    ]
+])
+
+web_menu = ReplyKeyboardMarkup(keyboard=[
+    [
+        KeyboardButton(text='🏪 Магазин'), KeyboardButton(text='🎪 Казино')
+    ],
+    [
+        KeyboardButton(text='🔙 Домой')
     ]
 ])
