@@ -412,11 +412,18 @@ async def fight_handler(message: types.Message, state: FSMContext):
     attacker_lvl = attacker_data[7]
     attacker_name = f'{attacker_faction[0]} {attacker_data[4]} 💿{attacker_lvl}'
 
-    # Проверка на активную атаку
-    if is_user_on_cooldown(attacker_id):
-        await message.answer("Вы уже атакуете цель. Дождитесь завершения текущей атаки.", reply_markup=kb.main_menu)
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    print(attacker_id)
+    cursor.execute('SELECT * FROM active_attacks WHERE attacker_id=?', (int(message.from_user.id),))
+
+    # Пример обработки результата запроса
+    active_attack = cursor.fetchone()
+    if active_attack:
+        await message.answer("Вы уже совершаете атаку.", reply_markup=kb.main_menu)
         await state.set_state(fsm.menu)
         return
+
 
     # Поиск цели
     targets = find_targets(attacker_search, attacker_faction)
@@ -440,8 +447,6 @@ async def fight_handler(message: types.Message, state: FSMContext):
         target_defense *= 0.75
 
     # Сохраняем атаку в базе данных
-    conn = sqlite3.connect('users.db')
-    cursor = conn.cursor()
     cursor.execute('INSERT INTO active_attacks (attacker_id, target_id, attack_time) VALUES (?, ?, ?)',
                    (attacker_id, target_id, int(datetime.now().timestamp())))
     conn.commit()
