@@ -16,6 +16,7 @@ from aiogram.types import ReplyKeyboardRemove
 import app.keyboards as kb
 from aiogram import F
 import nest_asyncio
+from random import randint
 
 nest_asyncio.apply()
 
@@ -242,7 +243,8 @@ async def fight_handler(message: types.Message, state: FSMContext):
         await state.set_state(fsm.menu)
         return
 
-    target_id = targets[0]  # Выбираем первую найденную цель для простоты
+    print(targets)
+    target_id = targets[randint(0, len(targets))]
     target_data = get_user_data(target_id)
     target_defense = target_data[10]  # Поле "Защита"
     target_status = target_data[15]  # Поле "Статус" (например, "активен", "спит", "отруб")
@@ -309,15 +311,15 @@ async def check_parry(attacker_id, target_id, target_agility, target_defense):
         conn.close()
     else:
         # Пример награды деньгами
-        reward_money = target_data[7] * 0.1
+        reward_money = round(target_data[7] * 0.1)
         reward_experience = 100  # Пример награды опытом
 
         # Обновление данных атакующего
-        update_user_data(attacker_id, 'money', attacker_data[7] + reward_money)
+        update_user_data(attacker_id, 'money', round([7] + reward_money))
         update_user_data(attacker_id, 'experience', attacker_data[8] + reward_experience)
 
         # Обновление данных цели
-        update_user_data(target_id, 'money', target_data[7] - reward_money)
+        update_user_data(target_id, 'money', round(target_data[7] - reward_money))
 
         await bot.send_message(target_id, "Вам не удалось парировать атаку. Вы потеряли часть своих монет.")
         await bot.send_message(attacker_id,
@@ -371,7 +373,7 @@ async def parry_attack(attacker_id, target_id, target_agility, attacker_defense)
         # Обновление данных цели
         update_user_data(target_id, 'money', target_data[5] - reward_money)
 
-        await bot.send_message(target_id, "Вам не удалось парировать атаку. Вы потеряли часть своих монет.")
+        await bot.send_message(target_id, f"Вам не удалось парировать атаку. Вы потеряли {reward_money} монет.")
         await bot.send_message(attacker_id,
                                f"Атака успешна! Вы получили {reward_money} монет и {reward_experience} опыта.")
 
@@ -472,6 +474,21 @@ async def tasks(message: Message, state: FSMContext):
     conn.close()
 
 
+def get_user_artifacts(user_id):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM user_artifacts WHERE user_id=?', (user_id,))
+    artifacts = cursor.fetchall()
+    conn.close()
+    return artifacts
+
+
+def calculate_stamina_with_artifacts(base_stamina, artifacts):
+    additional_stamina = sum(artifact[3] for artifact in
+                             artifacts)  # Предполагая, что 4-й столбец в таблице артефактов это бонус к выносливости
+    return base_stamina + additional_stamina
+
+
 @dp.message(fsm.tasks_init)
 async def tasks_init(message: Message, state: FSMContext):
     user_id = message.from_user.id
@@ -506,32 +523,46 @@ async def tasks_init(message: Message, state: FSMContext):
             if task:
                 task_id, name, description, level_required, stamina_cost, duration, reward_money, reward_experience, reward_artifact_chance = task
 
-                # Проверяем достаточно ли выносливости у пользователя
-                cursor.execute('SELECT endurance FROM users WHERE user_id=?', (user_id,))
-                user_stamina = cursor.fetchone()[0]
-                if user_stamina < stamina_cost:
-                    await message.answer("У вас недостаточно выносливости для выполнения этой задачи.")
+                if name == "🥱 Спать":
+                    # Устанавливаем статус "sleeping"
+                    cursor.execute('UPDATE users SET status=? WHERE user_id=?', ('sleeping', user_id))
+                    conn.commit()
                     conn.close()
-                    return
 
-                # Обновляем выносливость пользователя
-                new_stamina = user_stamina - stamina_cost
-                cursor.execute('UPDATE users SET endurance=? WHERE user_id=?', (new_stamina, user_id))
+                    # Запускаем таймер выполнения задачи
+                    end_time = datetime.now() + timedelta(minutes=duration)
+                    asyncio.create_task(complete_task(user_id, task_id, end_time))
 
-                # Добавляем задачу в user_tasks
-                end_time = datetime.now() + timedelta(minutes=duration)
-                cursor.execute('INSERT INTO user_tasks (user_id, task_id, end_time) VALUES (?, ?, ?)',
-                               (user_id, task_id, end_time))
+                    await message.answer(f"Вы начали выполнение задачи '{name}'. Она займет {duration} минут.",
+                                         reply_markup=kb.main_menu)
+                    await state.set_state(fsm.menu)
+                else:
+                    # Проверяем достаточно ли выносливости у пользователя
+                    cursor.execute('SELECT endurance FROM users WHERE user_id=?', (user_id,))
+                    user_stamina = cursor.fetchone()[0]
+                    if user_stamina < stamina_cost:
+                        await message.answer("У вас недостаточно выносливости для выполнения этой задачи.")
+                        conn.close()
+                        return
 
-                conn.commit()
-                conn.close()
+                    # Обновляем выносливость пользователя
+                    new_stamina = user_stamina - stamina_cost
+                    cursor.execute('UPDATE users SET endurance=? WHERE user_id=?', (new_stamina, user_id))
 
-                # Запускаем таймер выполнения задачи
-                asyncio.create_task(complete_task(user_id, task_id, end_time))
+                    # Добавляем задачу в user_tasks
+                    end_time = datetime.now() + timedelta(minutes=duration)
+                    cursor.execute('INSERT INTO user_tasks (user_id, task_id, end_time) VALUES (?, ?, ?)',
+                                   (user_id, task_id, end_time))
 
-                await message.answer(f"Вы начали выполнение задачи '{name}'. Она займет {duration} минут.",
-                                     reply_markup=kb.main_menu)
-                await state.set_state(fsm.menu)
+                    conn.commit()
+                    conn.close()
+
+                    # Запускаем таймер выполнения задачи
+                    asyncio.create_task(complete_task(user_id, task_id, end_time))
+
+                    await message.answer(f"Вы начали выполнение задачи '{name}'. Она займет {duration} минут.",
+                                         reply_markup=kb.main_menu)
+                    await state.set_state(fsm.menu)
             else:
                 await message.answer("Задача не найдена.", reply_markup=kb.main_menu)
                 await state.set_state(fsm.menu)
@@ -562,19 +593,37 @@ async def complete_task(user_id, task_id, end_time):
     if task:
         _, name, description, level_required, stamina_cost, duration, reward_money, reward_experience, reward_artifact_chance = task
 
-        # Выдаём награду пользователю
-        cursor.execute('UPDATE users SET money=money+?, experience=experience+? WHERE user_id=?',
-                       (reward_money, reward_experience, user_id))
+        if name == "🥱 Спать":
+            # Извлекаем текущую выносливость и бонусы от артефактов
+            cursor.execute('SELECT endurance FROM users WHERE user_id=?', (user_id,))
+            user_stamina = cursor.fetchone()[0]
+            artifacts = get_user_artifacts(user_id)
+            max_stamina = calculate_stamina_with_artifacts(100, artifacts)
 
-        # Удаляем задачу из user_tasks
-        cursor.execute('DELETE FROM user_tasks WHERE user_id=?', (user_id,))
+            # Обновляем выносливость пользователя
+            new_stamina = min(user_stamina + 100, max_stamina)
+            cursor.execute('UPDATE users SET endurance=?, status=? WHERE user_id=?', (new_stamina, 'active', user_id))
 
-        conn.commit()
-        conn.close()
+            conn.commit()
+            conn.close()
 
-        # Отправляем сообщение пользователю
-        await bot.send_message(user_id,
-                               f"Вы завершили задачу '{name}'. Награда: {reward_money} денег, {reward_experience} опыта.")
+            # Отправляем сообщение пользователю
+            await bot.send_message(user_id,
+                                   f"Вы завершили задачу '{name}'. Ваша выносливость восстановлена до {new_stamina}.")
+        else:
+            # Выдаём награду пользователю
+            cursor.execute('UPDATE users SET money=money+?, experience=experience+? WHERE user_id=?',
+                           (reward_money, reward_experience, user_id))
+
+            # Удаляем задачу из user_tasks
+            cursor.execute('DELETE FROM user_tasks WHERE user_id=?', (user_id,))
+
+            conn.commit()
+            conn.close()
+
+            # Отправляем сообщение пользователю
+            await bot.send_message(user_id,
+                                   f"Вы завершили задачу '{name}'. Награда: {reward_money} денег, {reward_experience} опыта.")
     else:
         conn.close()
 
