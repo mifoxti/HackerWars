@@ -42,6 +42,7 @@ class fsm(StatesGroup):
     settings = State()
     code_reviewer = State()
     generate_code = State()
+    top = State()
 
 
 # Загрузка токена из файла config.json
@@ -883,8 +884,7 @@ async def complete_task(user_id, task_id, end_time):
 
 @dp.message(fsm.web)
 async def web_handler(message: Message, state: FSMContext):
-    await state.set_state(fsm.web)
-    if message.text in ["🏪 Магазин", "🎪 Казино", "🔙 Домой"]:
+    if message.text in ["🏪 Магазин", "🎪 Казино", "🔙 Домой", "🏆 Топ лучших"]:
         if message.text == "🏪 Магазин":
             await state.update_data(menu=message.text)
             await shop_command_handler(message, state)
@@ -895,9 +895,35 @@ async def web_handler(message: Message, state: FSMContext):
             stats_message = return_home(message)
             await message.answer(f'root@HackerWars:/$\n\n{stats_message}', reply_markup=kb.main_menu)
             await state.set_state(fsm.menu)
+        elif message.text == '🏆 Топ лучших':
+            await message.answer('Это лучшие хакеры всех времен и народов:\n')
+            await state.update_data(menu=message.text)
+            await top_handler(message, state)
     else:
         await message.answer(f'Хм, кажется, такого выбора тебе не давали, не забывай свои права...')
         await state.set_state(fsm.menu)
+
+
+@dp.message(fsm.top)
+async def top_handler(message: Message, state: FSMContext):
+    await state.set_state(fsm.top)
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    # Запрос для получения топ-5 пользователей по уровню
+    cursor.execute('SELECT game_name, level, faction FROM users ORDER BY level DESC LIMIT 5')
+    top_users = cursor.fetchall()
+    conn.close()
+    result = f''
+    # Форматируем результат в строку
+    if top_users:
+        result = "🏆 Топ 5 пользователей по уровню:\n\n"
+        for idx, user in enumerate(top_users, start=1):
+            result += f"{idx}. {user[2][0]} {user[0]} 💿{user[1]}\n"
+    else:
+        result = "Не удалось получить данные о топ-пользователях."
+
+    await message.answer(result, reply_markup=kb.main_menu)
+    await state.set_state(fsm.menu)
 
 
 @dp.message(fsm.shop)
@@ -1042,7 +1068,7 @@ async def buy_command_handler(message: Message, state: FSMContext):
         conn.close()
         return
     artifact_id = artifact[0]
-    cursor.execute('SELECT * FROM user_artifacts WHERE user_id=? AND id=?',
+    cursor.execute('SELECT * FROM user_artifacts WHERE user_id=? AND artifact_id=?',
                    (message.from_user.id, artifact_id))
     existing_artifact = cursor.fetchone()
     if existing_artifact:

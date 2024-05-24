@@ -1,5 +1,6 @@
 import sqlite3
 
+
 # Функция для создания соединения с базой данных
 def create_connection(db_file):
     conn = None
@@ -8,6 +9,7 @@ def create_connection(db_file):
     except sqlite3.Error as e:
         print(e)
     return conn
+
 
 # Функция для создания таблицы заданий
 def create_tasks_table(conn):
@@ -29,6 +31,7 @@ def create_tasks_table(conn):
     except sqlite3.Error as e:
         print(e)
 
+
 # Функция для вставки задания в таблицу
 def insert_task(conn, task_data):
     try:
@@ -42,6 +45,7 @@ def insert_task(conn, task_data):
     except sqlite3.Error as e:
         print(e)
 
+
 # Функция для получения данных о задании от пользователя
 def get_task_data():
     name = input("Введите название задания: ")
@@ -52,7 +56,9 @@ def get_task_data():
     reward_money = int(input("Введите сумму денег за выполнение задания: "))
     reward_experience = int(input("Введите количество опыта за выполнение задания: "))
     reward_artifact_chance = int(input("Введите шанс на получение артефакта (в процентах): "))
-    return (name, description, level_required, stamina_cost, duration, reward_money, reward_experience, reward_artifact_chance)
+    return (
+    name, description, level_required, stamina_cost, duration, reward_money, reward_experience, reward_artifact_chance)
+
 
 def main():
     db_file = 'users.db'
@@ -68,6 +74,7 @@ def main():
         conn.close()
     else:
         print("Ошибка! Невозможно установить соединение с базой данных.")
+
 
 if __name__ == '__main__':
     main()

@@ -32,6 +32,9 @@ web_menu = ReplyKeyboardMarkup(keyboard=[
         KeyboardButton(text='🏪 Магазин'), KeyboardButton(text='🎪 Казино')
     ],
     [
+        KeyboardButton(text='🏆 Топ лучших')
+    ],
+    [
         KeyboardButton(text='🔙 Домой')
     ]
 ])
