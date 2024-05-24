@@ -44,3 +44,12 @@ fight_menu = ReplyKeyboardMarkup(keyboard=[
         KeyboardButton(text='🔙 Домой')
     ]
 ])
+
+settings_menu = ReplyKeyboardMarkup(keyboard=[
+    [
+        KeyboardButton(text='🔑 Ввести код')
+    ],
+    [
+        KeyboardButton(text='🔙 Домой')
+    ]
+])

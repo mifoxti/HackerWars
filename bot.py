@@ -2,8 +2,9 @@
 import asyncio
 from datetime import datetime, timedelta
 import json
+import os
 import sqlite3
-
+import json
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.filters import Command, CommandStart
@@ -38,6 +39,9 @@ class fsm(StatesGroup):
     broadcast = State()
     parry = State()
     ready_for_fight = State()
+    settings = State()
+    code_reviewer = State()
+    generate_code = State()
 
 
 # Загрузка токена из файла config.json
@@ -193,20 +197,159 @@ async def menu_handler(message: Message, state: FSMContext):
                                  reply_markup=kb.fight_menu
                                  )
             await state.set_state(fsm.ready_for_fight)
+        elif message.text == '⚙️ Настройки':
+            await message.answer(
+                f'В будущем, в настройках будет много всего интересного, а пока можно ввести подарочный код)',
+                reply_markup=kb.settings_menu)
+            await state.set_state(fsm.settings)
     elif message.text.split(' ')[0] == '/add_artifact' and message.from_user.id == 808305848:
         await state.update_data(menu=message.text)
         await add_artifact_handler(message, state)
     elif message.text.split(' ')[0] == '/broadcast' and message.from_user.id == 808305848:
         await state.update_data(menu=message.text)
         await broadcast_handler(message, state)
+    elif message.text.split(' ')[0] == '/generate_code' and message.from_user.id == 808305848:
+        await state.update_data(menu=message.text)
+        await generate_code(message, state)
     else:
         await message.answer(f'Хм, кажется, такого выбора тебе не давали, не забывай свои права...')
         await state.set_state(fsm.menu)
 
 
+@dp.message(fsm.settings)
+async def settings_handler(message: Message, state: FSMContext):
+    if message.text in ["🔑 Ввести код", "🔙 Домой"]:
+        if message.text == "🔑 Ввести код":
+            await state.update_data(settings_handler=message.text)
+            await message.answer(f'Ожидаю ввод подарочного кода!')
+            await state.set_state(fsm.code_reviewer)
+        elif message.text == "🔙 Домой":
+            stats_message = return_home(message)
+            await message.answer(f'root@HackerWars:/$\n\n{stats_message}', reply_markup=kb.main_menu)
+            await state.set_state(fsm.menu)
+    else:
+        await message.answer(f'Хм, кажется, такого выбора тебе не давали, не забывай свои права...')
+        await state.set_state(fsm.menu)
+
+
+@dp.message(fsm.code_reviewer)
+async def code_reviewer(message: types.Message, state: FSMContext):
+    # Получаем данные о пользователе из состояния
+    user_data = await state.get_data()
+    slovar = {
+        "attack": '⚔️ Атака',
+        "defense": '🛡 Защита',
+        "camouflage": '📺 Камуфляж',
+        "search": '🔭 Поиск',
+        "agility": '💻 Ловкость',
+        "endurance": '🔋 Выносливость',
+    }
+    # Получаем текст сообщения и извлекаем из него информацию о подарочном коде
+    text = message.text
+
+    code = text
+
+    # Проверяем, есть ли такой код в базе данных или JSON-файле
+    with open('gift_codes.json', 'r+') as file:
+        data = json.load(file)
+        if code not in data:
+            await message.answer("Указанный подарочный код недействителен.", reply_markup=kb.main_menu)
+            await state.set_state(fsm.menu)
+            return
+
+        # Проверяем, активировал ли текущий пользователь данный код
+        if message.from_user.id in data[code]['activated_users']:
+            await message.answer("Вы уже активировали данный подарочный код.", reply_markup=kb.main_menu)
+            await state.set_state(fsm.menu)
+            return
+
+        # Получаем характеристики из подарочного кода
+        characteristics = data[code]
+
+        # Добавляем ID текущего пользователя в список активированных пользователей для данного кода
+        characteristics['activated_users'].append(message.from_user.id)
+
+        # Обновляем JSON-файл
+        file.seek(0)
+        json.dump(data, file)
+
+    # Обновляем характеристики пользователя в базе данных
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+
+    updated_characteristics = []
+
+    for characteristic, value in characteristics.items():
+        if value != 0 and characteristic != 'activated_users':
+            cursor.execute(f"UPDATE users SET {characteristic} = {characteristic} + ? WHERE user_id = ?",
+                           (value, message.from_user.id))
+            updated_characteristics.append(f"{slovar[characteristic]} +{value}")
+
+    # Применяем изменения в базе данных
+    conn.commit()
+    conn.close()
+
+    # Обновляем данные пользователя в состоянии
+    await state.update_data(user_data=user_data)
+
+    # Отправляем сообщение о том, какие характеристики были улучшены
+    if updated_characteristics:
+        characteristics_message = "\n".join(updated_characteristics)
+        await message.answer(f"Характеристики пользователя успешно обновлены:\n\n{characteristics_message}",
+                             reply_markup=kb.main_menu)
+    else:
+        await message.answer("Подарочный код успешно активирован, но не было ненулевых характеристик для обновления.",
+                             reply_markup=kb.main_menu)
+
+    # Переходим в основное меню
+    await state.set_state(fsm.menu)
+
+
+@dp.message(fsm.generate_code)
+async def generate_code(message: types.Message, state: FSMContext):
+    # Получение текста сообщения и анализирование его для извлечения характеристик
+    text = message.text.split(' ')
+    if len(text) != 8:
+        await message.answer(
+            "Некорректное количество аргументов. Используйте: /generate_code [code] [attack] [defense] [camouflage] [search] [agility] [endurance]")
+        return
+
+    # Извлечение характеристик из текста сообщения
+    try:
+        code = text[1]
+        attack = int(text[2])
+        defense = int(text[3])
+        camouflage = int(text[4])
+        search = int(text[5])
+        agility = int(text[6])
+        endurance = int(text[7])
+    except ValueError:
+        await message.answer("Характеристики должны быть числами.")
+        return
+
+    # Сохранение подарочного кода и его характеристик в JSON-файле или базе данных
+    with open('gift_codes.json', 'r+') as file:
+        data = json.load(file)
+        data[code] = {
+            "attack": attack,
+            "defense": defense,
+            "camouflage": camouflage,
+            "search": search,
+            "agility": agility,
+            "endurance": endurance,
+            "activated_users": []  # Поле для хранения ID пользователей, активировавших данный код
+        }
+        file.seek(0)
+        json.dump(data, file)
+
+    # Отправка подарочного кода пользователю
+    await message.answer(f"Сгенерирован новый подарочный код: {code}")
+    await state.set_state(fsm.menu)
+
+
 @dp.message(fsm.ready_for_fight)
 async def ready_for_fight(message: types.Message, state: FSMContext):
-    if message.text  in ["🔪 Напасть", "🔙 Домой"]:
+    if message.text in ["🔪 Напасть", "🔙 Домой"]:
         if message.text == "🔪 Напасть":
             await state.update_data(fight_handler=message.text)
             await fight_handler(message, state)
@@ -335,7 +478,8 @@ async def check_parry(attacker_id, target_id, target_agility, target_defense):
     # Проверка успешности парирования
     if target_agility > attacker_data[10] * 0.5:
         update_user_data(attacker_id, 'defense', attacker_data[10] * 0.5)
-        await bot.send_message(attacker_id, "Ваша атака была парирована! Ваша защита была уменьшена на 50%.", reply_markup=kb.main_menu)
+        await bot.send_message(attacker_id, "Ваша атака была парирована! Ваша защита была уменьшена на 50%.",
+                               reply_markup=kb.main_menu)
         await bot.send_message(target_id, "Вы успешно парировали атаку!", reply_markup=kb.main_menu)
 
         # Удаление атаки из базы данных
@@ -358,9 +502,11 @@ async def check_parry(attacker_id, target_id, target_agility, target_defense):
         # Обновление данных цели
         update_user_data(target_id, 'money', round(target_data[7] - reward_money))
 
-        await bot.send_message(target_id, f"Вам не удалось парировать атаку. Вы потеряли {reward_money} монет.", reply_markup=kb.main_menu)
+        await bot.send_message(target_id, f"Вам не удалось парировать атаку. Вы потеряли {reward_money} монет.",
+                               reply_markup=kb.main_menu)
         await bot.send_message(attacker_id,
-                               f"Атака успешна! Вы получили {reward_money} монет и {reward_experience} опыта.", reply_markup=kb.main_menu)
+                               f"Атака успешна! Вы получили {reward_money} монет и {reward_experience} опыта.",
+                               reply_markup=kb.main_menu)
 
         # Удаление атаки из базы данных
         cursor.execute('DELETE FROM active_attacks WHERE attacker_id=? AND target_id=?', (attacker_id, target_id))
@@ -398,7 +544,8 @@ def is_target_under_attack(target_id):
 
 async def parry_attack(attacker_id, target_id, target_agility, attacker_defense):
     # await asyncio.sleep(20)  # Ожидание 2 минут
-    await bot.send_message(attacker_id, "Ваша атака была парирована! Ваша защита была уменьшена на 50%.", reply_markup=kb.main_menu)
+    await bot.send_message(attacker_id, "Ваша атака была парирована! Ваша защита была уменьшена на 50%.",
+                           reply_markup=kb.main_menu)
     await bot.send_message(target_id, "Вы успешно парировали атаку!", reply_markup=kb.main_menu)
     target_data = get_user_data(target_id)
     attacker_data = get_user_data(attacker_id)
@@ -418,7 +565,8 @@ async def parry_attack(attacker_id, target_id, target_agility, attacker_defense)
         await bot.send_message(attacker_id, "Вашей защиты не хватило, чтобы переиграть цель. Охотник проиграл жертве..."
                                             "\n\n"
                                             " Вы потеряли часть своих монет.", reply_markup=kb.main_menu)
-        await bot.send_message(target_id, "Вашей ловкости хватило, чтобы переиграть гадкого воришку!", reply_markup=kb.main_menu)
+        await bot.send_message(target_id, "Вашей ловкости хватило, чтобы переиграть гадкого воришку!",
+                               reply_markup=kb.main_menu)
         # Удаление атаки из базы данных
         conn = sqlite3.connect('users.db')
         cursor = conn.cursor()
@@ -442,9 +590,11 @@ async def parry_attack(attacker_id, target_id, target_agility, attacker_defense)
         # Обновление данных цели
         update_user_data(target_id, 'money', round(target_data[5] - reward_money))
 
-        await bot.send_message(target_id, f"Вам не удалось парировать атаку. Вы потеряли {reward_money} монет.", reply_markup=kb.main_menu)
+        await bot.send_message(target_id, f"Вам не удалось парировать атаку. Вы потеряли {reward_money} монет.",
+                               reply_markup=kb.main_menu)
         await bot.send_message(attacker_id,
-                               f"Атака успешна! Вы получили {reward_money} монет и {reward_experience} опыта.", reply_markup=kb.main_menu)
+                               f"Атака успешна! Вы получили {reward_money} монет и {reward_experience} опыта.",
+                               reply_markup=kb.main_menu)
 
         # Удаление атаки из базы данных
         conn = sqlite3.connect('users.db')
