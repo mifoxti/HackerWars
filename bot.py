@@ -352,12 +352,14 @@ async def ready_for_fight(message: types.Message, state: FSMContext):
     if message.text in ["🔪 Напасть", "🔙 Домой"]:
         if message.text == "🔪 Напасть":
             await state.update_data(fight_handler=message.text)
+            await state.set_state(fsm.menu)
             await fight_handler(message, state)
         elif message.text == "🔙 Домой":
             stats_message = return_home(message)
             await message.answer(f'root@HackerWars:/$\n\n{stats_message}', reply_markup=kb.main_menu)
             await state.set_state(fsm.menu)
     else:
+        print(1)
         await message.answer(f'Хм, кажется, такого выбора тебе не давали, не забывай свои права...')
         await state.set_state(fsm.menu)
 
@@ -393,7 +395,9 @@ def find_targets(attacker_search, attacker_faction):
     return targets
 
 
+@dp.message(fsm.fight)
 async def fight_handler(message: types.Message, state: FSMContext):
+    print(1)
     attacker_id = message.from_user.id
     attacker_data = get_user_data(attacker_id)
 
@@ -404,6 +408,8 @@ async def fight_handler(message: types.Message, state: FSMContext):
     attacker_search = attacker_data[12]  # Поле "Поиск"
     attacker_attack = attacker_data[9]  # Поле "Атака"
     attacker_faction = attacker_data[6]  # Поле "Фракция"
+    attacker_lvl = attacker_data[7]
+    attacker_name = f'{attacker_faction[0]} {attacker_data[4]} 💿{attacker_lvl}'
 
     # Проверка на активную атаку
     if is_user_on_cooldown(attacker_id):
@@ -423,7 +429,9 @@ async def fight_handler(message: types.Message, state: FSMContext):
     target_defense = target_data[10]  # Поле "Защита"
     target_status = target_data[15]  # Поле "Статус" (например, "активен", "спит", "отруб")
     target_agility = target_data[13]  # Поле "Ловкость"
-
+    target_faction = target_data[6]  # Поле "Фракция"
+    target_lvl = target_data[7]
+    target_name = f'{target_faction[0]} {target_data[4]} 💿{target_lvl}'
     # Применение штрафов к защите в зависимости от статуса
     if target_status == 'sleeping':
         target_defense *= 0.95
@@ -443,12 +451,13 @@ async def fight_handler(message: types.Message, state: FSMContext):
         [InlineKeyboardButton(text="Парировать атаку", callback_data=f"parry_{attacker_id}")]
     ])
     try:
-        await bot.send_message(target_id, "Вас атакуют! Вы можете попытаться парировать атаку в течение 2 минут.",
+        await bot.send_message(target_id,
+                               f"Вас атакует {attacker_name}\nВы можете попытаться парировать атаку в течение 2 минут.",
                                reply_markup=keyboard)
     except Exception as e:
         print(f"Не удалось отправить сообщение пользователю {target_id}: {e}")
 
-    await message.answer("Вы атаковали цель. Ожидайте результат атаки.", reply_markup=kb.main_menu)
+    await message.answer(f"Вы напали на {target_name}\nОжидайте результат атаки.", reply_markup=kb.main_menu)
 
     # Запуск ожидания парирования атаки
     await asyncio.sleep(120)
@@ -462,13 +471,16 @@ async def fight_handler(message: types.Message, state: FSMContext):
 
     if active_attack:
         # Если атака все еще активна, то продолжаем выполнение
-        await check_parry(attacker_id, target_id, target_agility, target_defense)
+        await check_parry(attacker_id, target_id, target_agility, target_defense, state)
+        await state.set_state(fsm.parry)
     else:
         # Если атака уже не активна (пользователь парировал), то просто выходим из функции
         return
 
 
-async def check_parry(attacker_id, target_id, target_agility, target_defense):
+@dp.message(fsm.parry)
+async def check_parry(attacker_id, target_id, target_agility, target_defense, state: FSMContext):
+    await state.set_state(fsm.parry)
     target_data = get_user_data(target_id)
     attacker_data = get_user_data(attacker_id)
 
@@ -480,7 +492,7 @@ async def check_parry(attacker_id, target_id, target_agility, target_defense):
         update_user_data(attacker_id, 'defense', attacker_data[10] * 0.5)
         await bot.send_message(attacker_id, "Ваша атака была парирована! Ваша защита была уменьшена на 50%.",
                                reply_markup=kb.main_menu)
-        await bot.send_message(target_id, "Вы успешно парировали атаку!", reply_markup=kb.main_menu)
+        await bot.send_message(target_id, "Вы пробуете парировать атаку!", reply_markup=kb.main_menu)
 
         # Удаление атаки из базы данных
         cursor.execute('DELETE FROM active_attacks WHERE attacker_id=? AND target_id=?', (attacker_id, target_id))
@@ -517,8 +529,9 @@ async def check_parry(attacker_id, target_id, target_agility, target_defense):
         cursor.execute('INSERT OR REPLACE INTO attack_cooldown (user_id, cooldown_end) VALUES (?, ?)',
                        (target_id, int(cooldown_end.timestamp())))
         conn.commit()
-
     conn.close()
+    await state.set_state(fsm.menu)
+    return
 
 
 def is_user_on_cooldown(user_id):
@@ -542,11 +555,13 @@ def is_target_under_attack(target_id):
     return active_attack is not None
 
 
-async def parry_attack(attacker_id, target_id, target_agility, attacker_defense):
+@dp.message(fsm.parry)
+async def parry_attack(attacker_id, target_id, target_agility, attacker_defense, state: FSMContext):
     # await asyncio.sleep(20)  # Ожидание 2 минут
+    await state.set_state(fsm.parry)
     await bot.send_message(attacker_id, "Ваша атака была парирована! Ваша защита была уменьшена на 50%.",
                            reply_markup=kb.main_menu)
-    await bot.send_message(target_id, "Вы успешно парировали атаку!", reply_markup=kb.main_menu)
+    await bot.send_message(target_id, "Вы пробуете парировать атаку!", reply_markup=kb.main_menu)
     target_data = get_user_data(target_id)
     attacker_data = get_user_data(attacker_id)
 
@@ -562,9 +577,10 @@ async def parry_attack(attacker_id, target_id, target_agility, attacker_defense)
         # Обновление данных цели
         update_user_data(attacker_id, 'money', round(attacker_data[5] - reward_money))
 
-        await bot.send_message(attacker_id, "Вашей защиты не хватило, чтобы переиграть цель. Охотник проиграл жертве..."
-                                            "\n\n"
-                                            " Вы потеряли часть своих монет.", reply_markup=kb.main_menu)
+        await bot.send_message(attacker_id,
+                               "Вашей защиты не хватило, чтобы переиграть цель. Охотник превратился в добычу..."
+                               "\n\n"
+                               " Вы потеряли часть своих монет.", reply_markup=kb.main_menu)
         await bot.send_message(target_id, "Вашей ловкости хватило, чтобы переиграть гадкого воришку!",
                                reply_markup=kb.main_menu)
         # Удаление атаки из базы данных
@@ -607,10 +623,12 @@ async def parry_attack(attacker_id, target_id, target_agility, attacker_defense)
                        (target_id, int(cooldown_end.timestamp())))
         conn.commit()
         conn.close()
+    await state.set_state(fsm.menu)
+    return
 
 
 @dp.callback_query(F.data.startswith('parry_'))
-async def process_callback_parry(callback_query: types.CallbackQuery):
+async def process_callback_parry(callback_query: types.CallbackQuery, state: FSMContext):
     attacker_id = int(callback_query.data.split('_')[1])
     target_id = callback_query.from_user.id
     target_data = get_user_data(target_id)
@@ -618,7 +636,8 @@ async def process_callback_parry(callback_query: types.CallbackQuery):
 
     if target_data and attacker_data:
         await callback_query.answer('Атака парирована, ожидаем результаты боя', reply_markup=kb.main_menu)
-        await parry_attack(attacker_id, target_id, target_data[13], attacker_data[10])  # Поля "Ловкость" и "Защита"
+        await parry_attack(attacker_id, target_id, target_data[13], attacker_data[10],
+                           state)  # Поля "Ловкость" и "Защита"
     else:
         await bot.answer_callback_query(callback_query.id, text="Ошибка при обработке данных пользователя.")
 
@@ -651,7 +670,8 @@ async def parry_handler(message: types.Message, state: FSMContext):
         attacker_data = get_user_data(attacker_id)
         target_data = get_user_data(user_id)
 
-        await parry_attack(attacker_id, user_id, target_data[13], attacker_data[10])  # Поля "Ловкость" и "Защита"
+        await parry_attack(attacker_id, user_id, target_data[13], attacker_data[10],
+                           state)  # Поля "Ловкость" и "Защита"
     else:
         await message.answer("Нет активных атак, которые можно парировать.", reply_markup=kb.main_menu)
 
@@ -1040,7 +1060,6 @@ async def buy_command_handler(message: Message, state: FSMContext):
 
     user_money = user_data[5]
     artifact_cost = artifact[2]
-
 
     if user_money < artifact_cost:
         await message.answer("У вас недостаточно монет для покупки этого артефакта.")
