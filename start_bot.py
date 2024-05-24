@@ -9,9 +9,9 @@ from bot import dp, TOKEN
 import sqlite3
 from level_checker import check_and_update_player_levels
 import nest_asyncio
+from cooldown_handler import remove_expired_cooldowns
 
 nest_asyncio.apply()
-
 
 def create_tables():
     conn = sqlite3.connect('users.db')
@@ -100,9 +100,13 @@ def create_tables():
         )
     ''')
 
+    # Создание таблицы attack_cooldown, если она не существует
+    cursor.execute('''CREATE TABLE IF NOT EXISTS attack_cooldown (
+                        user_id INTEGER PRIMARY KEY,
+                        cooldown_end INTEGER
+                    )''')
     conn.commit()
     conn.close()
-
 
 async def main():
     """
@@ -117,8 +121,10 @@ async def main():
     # Запуск асинхронной задачи для проверки уровня игроков
     asyncio.create_task(check_and_update_player_levels(bot))
 
-    await dp.start_polling(bot)
+    # Запуск асинхронной задачи для удаления истекших кулдаунов
+    asyncio.create_task(remove_expired_cooldowns())
 
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)

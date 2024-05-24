@@ -219,9 +219,12 @@ def find_targets(attacker_search, attacker_faction):
     cursor = conn.cursor()
     cursor.execute('SELECT user_id FROM users WHERE camouflage < ? AND faction != ?',
                    (attacker_search, attacker_faction))
-    targets = cursor.fetchall()
+    potential_targets = cursor.fetchall()
     conn.close()
-    return [target[0] for target in targets]
+
+    # Исключаем цели, которые находятся на кулдауне
+    targets = [target[0] for target in potential_targets if not is_user_on_cooldown(target[0])]
+    return targets
 
 
 async def fight_handler(message: types.Message, state: FSMContext):
@@ -236,6 +239,12 @@ async def fight_handler(message: types.Message, state: FSMContext):
     attacker_attack = attacker_data[9]  # Поле "Атака"
     attacker_faction = attacker_data[6]  # Поле "Фракция"
 
+    # Проверка на активную атаку
+    if is_user_on_cooldown(attacker_id):
+        await message.answer("Вы уже атакуете цель. Дождитесь завершения текущей атаки.")
+        await state.set_state(fsm.menu)
+        return
+
     # Поиск цели
     targets = find_targets(attacker_search, attacker_faction)
     if not targets:
@@ -243,8 +252,7 @@ async def fight_handler(message: types.Message, state: FSMContext):
         await state.set_state(fsm.menu)
         return
 
-    print(targets)
-    target_id = targets[randint(0, len(targets))]
+    target_id = targets[randint(0, len(targets) - 1)]
     target_data = get_user_data(target_id)
     target_defense = target_data[10]  # Поле "Защита"
     target_status = target_data[15]  # Поле "Статус" (например, "активен", "спит", "отруб")
@@ -278,6 +286,7 @@ async def fight_handler(message: types.Message, state: FSMContext):
 
     # Запуск ожидания парирования атаки
     await asyncio.sleep(120)
+
     # Проверяем, существует ли еще активная атака (пользователь не парировал)
     conn = sqlite3.connect('users.db')
     cursor = conn.cursor()
@@ -297,6 +306,9 @@ async def check_parry(attacker_id, target_id, target_agility, target_defense):
     target_data = get_user_data(target_id)
     attacker_data = get_user_data(attacker_id)
 
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+
     # Проверка успешности парирования
     if target_agility > attacker_data[10] * 0.5:
         update_user_data(attacker_id, 'defense', attacker_data[10] * 0.5)
@@ -304,18 +316,15 @@ async def check_parry(attacker_id, target_id, target_agility, target_defense):
         await bot.send_message(target_id, "Вы успешно парировали атаку!")
 
         # Удаление атаки из базы данных
-        conn = sqlite3.connect('users.db')
-        cursor = conn.cursor()
         cursor.execute('DELETE FROM active_attacks WHERE attacker_id=? AND target_id=?', (attacker_id, target_id))
         conn.commit()
-        conn.close()
     else:
         # Пример награды деньгами
         reward_money = round(target_data[7] * 0.1)
         reward_experience = 100  # Пример награды опытом
 
         # Обновление данных атакующего
-        update_user_data(attacker_id, 'money', round([7] + reward_money))
+        update_user_data(attacker_id, 'money', round(attacker_data[7] + reward_money))
         update_user_data(attacker_id, 'experience', attacker_data[8] + reward_experience)
 
         # Обновление данных цели
@@ -326,11 +335,37 @@ async def check_parry(attacker_id, target_id, target_agility, target_defense):
                                f"Атака успешна! Вы получили {reward_money} монет и {reward_experience} опыта.")
 
         # Удаление атаки из базы данных
-        conn = sqlite3.connect('users.db')
-        cursor = conn.cursor()
         cursor.execute('DELETE FROM active_attacks WHERE attacker_id=? AND target_id=?', (attacker_id, target_id))
         conn.commit()
-        conn.close()
+
+        # Установка кулдауна для цели
+        cooldown_end = datetime.now() + timedelta(hours=1)
+        cursor.execute('INSERT OR REPLACE INTO attack_cooldown (user_id, cooldown_end) VALUES (?, ?)',
+                       (target_id, int(cooldown_end.timestamp())))
+        conn.commit()
+
+    conn.close()
+
+
+def is_user_on_cooldown(user_id):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT cooldown_end FROM attack_cooldown WHERE user_id=?', (user_id,))
+    cooldown = cursor.fetchone()
+    conn.close()
+    if cooldown:
+        cooldown_end = datetime.fromtimestamp(cooldown[0])
+        return datetime.now() < cooldown_end
+    return False
+
+
+def is_target_under_attack(target_id):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT * FROM active_attacks WHERE target_id=?', (target_id,))
+    active_attack = cursor.fetchone()
+    conn.close()
+    return active_attack is not None
 
 
 async def parry_attack(attacker_id, target_id, target_agility, attacker_defense):
@@ -387,19 +422,28 @@ async def parry_attack(attacker_id, target_id, target_agility, attacker_defense)
 
 @dp.callback_query(F.data.startswith('parry_'))
 async def process_callback_parry(callback_query: types.CallbackQuery):
-    print(1)
     attacker_id = int(callback_query.data.split('_')[1])
     target_id = callback_query.from_user.id
     target_data = get_user_data(target_id)
     attacker_data = get_user_data(attacker_id)
 
     if target_data and attacker_data:
-        print(1)
         await callback_query.answer('Атака парирована, ожидаем результаты боя')
         await parry_attack(attacker_id, target_id, target_data[13], attacker_data[10])  # Поля "Ловкость" и "Защита"
-
     else:
         await bot.answer_callback_query(callback_query.id, text="Ошибка при обработке данных пользователя.")
+
+
+def is_user_on_cooldown(user_id):
+    conn = sqlite3.connect('users.db')
+    cursor = conn.cursor()
+    cursor.execute('SELECT cooldown_end FROM attack_cooldown WHERE user_id=?', (user_id,))
+    cooldown = cursor.fetchone()
+    conn.close()
+    if cooldown:
+        cooldown_end = datetime.fromtimestamp(cooldown[0])
+        return datetime.now() < cooldown_end
+    return False
 
 
 @dp.message(fsm.parry)
