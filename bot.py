@@ -904,42 +904,41 @@ async def shop_command_handler(message: Message, state: FSMContext):
     cursor.execute('SELECT * FROM artifacts WHERE req_lvl <= ?', (user_level,))
     artifacts = cursor.fetchall()
     conn.close()
-    encod = {
-        "attack": "⚔️ Атака",
-        "defense": "🛡 Защита",
-        "camouflage": "📺 Камуфляж",
-        "search": "🔭 Поиск",
-        "agility": "💻 Ловкость",
-        "endurance": "🔋 Выносливость"
-    }
 
     if not artifacts:
         await message.answer("В магазине пока нет артефактов.")
         return
 
-    shop_message = "Доступные артефакты (Для покупки введите номер):\n\n"
-    for artifact in artifacts:
-        art_id, art_name, art_cost, art_attack, art_defense, art_camouflage, art_search, art_agility, art_endurance, art_req_lvl = artifact
-
-        artifact_info = f"{art_id} {art_name}\nСтоимость: {art_cost} монет\n"
-
-        # Добавляем характеристики, которые не равны нулю
-        if art_attack != 0:
-            artifact_info += f"{encod['attack']}: {art_attack}\n"
-        if art_defense != 0:
-            artifact_info += f"{encod['defense']}: {art_defense}\n"
-        if art_camouflage != 0:
-            artifact_info += f"{encod['camouflage']}: {art_camouflage}\n"
-        if art_search != 0:
-            artifact_info += f"{encod['search']}: {art_search}\n"
-        if art_agility != 0:
-            artifact_info += f"{encod['agility']}: {art_agility}\n"
-        if art_endurance != 0:
-            artifact_info += f"{encod['endurance']}: {art_endurance}\n"
-
-        artifact_info += "\n"  # Добавляем пустую строку для разделения артефактов
-        shop_message += artifact_info
-    await message.answer(shop_message)
+    buttons = []
+    row = []
+    art_msg = 'Доступные артефакты:\n\n'
+    for art in artifacts:
+        id, name, cost, attack, defense, camouflage, search, agility, endur, req_lvl = art
+        art_msg += (f"{name}\n"
+                    f"💰 {cost} монет\n"
+                    f"💿 Требуемый уровень: {req_lvl}\n")
+        if attack != 0:
+            art_msg += f'⚔️ Атака: {attack}\n'
+        if defense != 0:
+            art_msg += f'🛡 Защита: {defense}\n'
+        if camouflage != 0:
+            art_msg += f'📺 Камуфляж: {camouflage}\n'
+        if search != 0:
+            art_msg += f'🔭 Поиск: {search}\n'
+        if agility != 0:
+            art_msg += f'💻 Ловкость: {agility}\n'
+        if endur != 0:
+            art_msg += f'🔋 Выносливость: {endur}\n'
+        art_msg += '\n'
+        row.append(KeyboardButton(text=name))
+        if len(row) == 2:
+            buttons.append(row)
+            row = []
+    if row:
+        buttons.append(row)
+    buttons.append([KeyboardButton(text='🔙 Домой')])
+    keyboard = ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+    await message.answer(art_msg, reply_markup=keyboard)
     await state.set_state(fsm.buy)
 
 
@@ -1006,40 +1005,24 @@ async def buy_command_handler(message: Message, state: FSMContext):
     Позволяет пользователю купить артефакт по его ID или выполнить другое действие.
     """
     args = message.text
-
-    # Проверяем, является ли введенный текст числом (ID артефакта) или нет
-    try:
-        artifact_id = int(args)
-    except ValueError:
-        # Если текст не является числом, обрабатываем его как другое действие
-        if message.text == "🏪 Магазин":
-            await state.update_data(menu=message.text)
-            await shop_command_handler(message, state)
-        elif message.text == "🎪 Казино":
-            await message.answer(f'Казино пока открыто только в Сочи, но скоро будет и здесь!')
-            await state.set_state(fsm.web)
-        elif message.text == '🔙 Домой':
-            stats_message = return_home(message)
-            await message.answer(f'root@HackerWars:/$\n\n{stats_message}', reply_markup=kb.main_menu)
-            await state.set_state(fsm.menu)
-        else:
-            await message.answer("ID артефакта должен быть числом. Пример: 1")
+    if args == "🔙 Домой":
+        stats_message = return_home(message)
+        await message.answer(f'root@HackerWars:/$\n\n{stats_message}', reply_markup=kb.main_menu)
+        await state.set_state(fsm.menu)
         return
-
-    # Если текст является числом, обрабатываем его как ID артефакта и выполняем покупку артефакта
-    # Остальной код остается без изменений
     conn = sqlite3.connect(db_filename)
     cursor = conn.cursor()
     cursor.execute('SELECT level FROM users WHERE user_id=?', (message.from_user.id,))
     user_level = cursor.fetchone()
-    cursor.execute('SELECT * FROM artifacts WHERE id = ? AND req_lvl <= ?', (artifact_id, user_level[0]))
+
+    cursor.execute('SELECT * FROM artifacts WHERE name = ? AND req_lvl <= ?', (args, user_level[0]))
     artifact = cursor.fetchone()
     if not artifact:
-        await message.answer("Артефакт с таким ID не найден.")
+        await message.answer("Такого артифакта нет.")
         conn.close()
         return
-
-    cursor.execute('SELECT * FROM user_artifacts WHERE user_id=? AND artifact_id=?',
+    artifact_id = artifact[0]
+    cursor.execute('SELECT * FROM user_artifacts WHERE user_id=? AND id=?',
                    (message.from_user.id, artifact_id))
     existing_artifact = cursor.fetchone()
     if existing_artifact:
@@ -1057,6 +1040,7 @@ async def buy_command_handler(message: Message, state: FSMContext):
 
     user_money = user_data[5]
     artifact_cost = artifact[2]
+
 
     if user_money < artifact_cost:
         await message.answer("У вас недостаточно монет для покупки этого артефакта.")
