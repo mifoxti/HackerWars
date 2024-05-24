@@ -35,3 +35,12 @@ web_menu = ReplyKeyboardMarkup(keyboard=[
         KeyboardButton(text='🔙 Домой')
     ]
 ])
+
+fight_menu = ReplyKeyboardMarkup(keyboard=[
+    [
+        KeyboardButton(text='🔪 Напасть')
+    ],
+    [
+        KeyboardButton(text='🔙 Домой')
+    ]
+])
